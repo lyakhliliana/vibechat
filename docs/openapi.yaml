@@ -1,0 +1,1373 @@
+openapi: 3.0.3
+info:
+  title: VibеChat API
+  description: |
+    REST API for the VibеChat messaging platform.
+
+    **Authentication**: most endpoints require a Bearer JWT access token obtained
+    via `/auth/register` or `/auth/login`. Pass it in the `Authorization` header:
+    ```
+    Authorization: Bearer <access_token>
+    ```
+
+    **WebSocket**: connect to `GET /ws` with the same `Authorization: Bearer <access_token>`
+    header. The connection subscribes the client to all their chat rooms for real-time delivery.
+
+    **Response envelope**: every JSON response wraps the payload:
+    ```json
+    { "data": <payload> }          // success
+    { "error": "<message>" }       // failure
+    ```
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration, login and token refresh
+  - name: Users
+    description: User profiles and search
+  - name: Chats
+    description: Direct and group chats, membership management
+  - name: Messages
+    description: Sending, editing, deleting messages and reactions
+  - name: System
+    description: Health check and WebSocket
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # --- primitives ---------------------------------------------------------
+    UUID:
+      type: string
+      format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    Timestamp:
+      type: string
+      format: date-time
+      example: "2024-01-15T12:34:56.789Z"
+
+    # --- domain objects -----------------------------------------------------
+    User:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        username:
+          type: string
+          example: alice
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+          example: "https://cdn.example.com/avatars/alice.jpg"
+        bio:
+          type: string
+          nullable: true
+          example: "Software engineer"
+        status:
+          type: string
+          enum: [online, offline, away]
+          example: online
+        last_seen:
+          $ref: '#/components/schemas/Timestamp'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      required: [id, username, email, status, last_seen, created_at, updated_at]
+
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT used for API requests
+        refresh_token:
+          type: string
+          description: Long-lived JWT used to obtain a new token pair
+      required: [access_token, refresh_token]
+
+    Chat:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        type:
+          type: string
+          enum: [direct, group]
+          example: group
+        name:
+          type: string
+          nullable: true
+          description: Present for group chats only
+          example: "Engineering Team"
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        description:
+          type: string
+          nullable: true
+          example: "Engineering discussions"
+        created_by:
+          $ref: '#/components/schemas/UUID'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      required: [id, type, created_by, created_at, updated_at]
+
+    MemberRole:
+      type: string
+      enum: [owner, admin, member]
+      example: member
+
+    ChatMember:
+      type: object
+      properties:
+        chat_id:
+          $ref: '#/components/schemas/UUID'
+        user_id:
+          $ref: '#/components/schemas/UUID'
+        role:
+          $ref: '#/components/schemas/MemberRole'
+        joined_at:
+          $ref: '#/components/schemas/Timestamp'
+        user:
+          $ref: '#/components/schemas/User'
+      required: [chat_id, user_id, role, joined_at]
+
+    Message:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        chat_id:
+          $ref: '#/components/schemas/UUID'
+        sender_id:
+          $ref: '#/components/schemas/UUID'
+        content:
+          type: string
+          example: "Hello, world!"
+        type:
+          type: string
+          enum: [text, image, file]
+          example: text
+        reply_to_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID of the message being replied to. Null if not a reply.
+          example: null
+        edited_at:
+          type: string
+          format: date-time
+          nullable: true
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        sender:
+          $ref: '#/components/schemas/User'
+        reactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reaction'
+        reply_to:
+          $ref: '#/components/schemas/Message'
+      required: [id, chat_id, sender_id, content, type, created_at, updated_at]
+
+    Reaction:
+      type: object
+      properties:
+        message_id:
+          $ref: '#/components/schemas/UUID'
+        user_id:
+          $ref: '#/components/schemas/UUID'
+        emoji:
+          type: string
+          example: "👍"
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        user:
+          $ref: '#/components/schemas/User'
+      required: [message_id, user_id, emoji, created_at]
+
+    MessageCursor:
+      type: object
+      description: Opaque keyset pagination cursor (pass both fields together)
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+      required: [id, created_at]
+
+    ChatPreview:
+      type: object
+      properties:
+        chat:
+          $ref: '#/components/schemas/Chat'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMember'
+        last_message:
+          $ref: '#/components/schemas/Message'
+        unread_count:
+          type: integer
+          example: 3
+      required: [chat, unread_count]
+
+    PageResult:
+      type: object
+      description: Paginated message list (newest first)
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        next_cursor:
+          $ref: '#/components/schemas/MessageCursor'
+      required: [messages]
+
+    # --- envelopes ----------------------------------------------------------
+    DataEnvelope:
+      type: object
+      properties:
+        data:
+          description: The response payload
+      required: [data]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "user not found"
+      required: [error]
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: Malformed request body or missing required parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "bad request"
+
+    Unauthorized:
+      description: Missing, invalid or expired access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "unauthorized"
+
+    Forbidden:
+      description: Caller lacks permission for the requested action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "insufficient rights"
+
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "user not found"
+
+    Conflict:
+      description: Resource already exists or unique constraint violated
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "email already taken"
+
+    Gone:
+      description: Resource has been soft-deleted and is no longer accessible
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "message is deleted"
+
+    UnprocessableEntity:
+      description: Request body parsed successfully but failed domain validation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "validation error: username must be at least 3 characters"
+
+    InternalServerError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error: "internal error"
+
+  # -------------------------------------------------------------------------
+  # Reusable parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    ChatID:
+      name: chat_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/UUID'
+    UserID:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/UUID'
+    MsgID:
+      name: msg_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/UUID'
+
+# =============================================================================
+# Paths
+# =============================================================================
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Auth
+  # ---------------------------------------------------------------------------
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 50
+                  pattern: '^[a-zA-Z0-9]+$'
+                  example: alice
+                email:
+                  type: string
+                  format: email
+                  example: alice@example.com
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 72
+                  format: password
+                  example: "s3cr3tPa$$"
+              required: [username, email, password]
+      responses:
+        '201':
+          description: User created — returns the new user and a token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+                      tokens:
+                        $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate an existing user
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: alice@example.com
+                password:
+                  type: string
+                  format: password
+                  example: "s3cr3tPa$$"
+              required: [email, password]
+      responses:
+        '200':
+          description: Login successful — returns the user and a token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+                      tokens:
+                        $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+              required: [refresh_token]
+      responses:
+        '200':
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Users
+  # ---------------------------------------------------------------------------
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: Get the authenticated user's profile
+      operationId: getMe
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [Users]
+      summary: Update the authenticated user's profile
+      operationId: updateMe
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: All fields are optional; omit to leave unchanged
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 50
+                  pattern: '^[a-zA-Z0-9]+$'
+                  example: alice2
+                bio:
+                  type: string
+                  maxLength: 500
+                  example: "Full-stack developer"
+                avatar_url:
+                  type: string
+                  format: uri
+                  example: "https://cdn.example.com/new.jpg"
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/users/search:
+    get:
+      tags: [Users]
+      summary: Search users by username or email prefix
+      operationId: searchUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query (non-empty)
+          schema:
+            type: string
+            example: "ali"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: List of matching users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/users/{user_id}:
+    get:
+      tags: [Users]
+      summary: Get a user's public profile by ID
+      operationId: getUserProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Chats
+  # ---------------------------------------------------------------------------
+  /api/v1/chats:
+    get:
+      tags: [Chats]
+      summary: List all chats the authenticated user belongs to
+      operationId: getUserChats
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Chat list with previews (last message + unread count)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatPreview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/direct:
+    post:
+      tags: [Chats]
+      summary: Create or return an existing direct chat with another user
+      operationId: createDirectChat
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_user_id:
+                  $ref: '#/components/schemas/UUID'
+              required: [target_user_id]
+      responses:
+        '200':
+          description: Existing direct chat returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
+        '201':
+          description: New direct chat created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/group:
+    post:
+      tags: [Chats]
+      summary: Create a new group chat
+      operationId: createGroupChat
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  example: "Engineering Team"
+                description:
+                  type: string
+                  maxLength: 500
+                  example: "Day-to-day engineering discussions"
+                member_ids:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/UUID'
+                  description: Initial members to invite (caller is added automatically as owner)
+              required: [name]
+      responses:
+        '201':
+          description: Group chat created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}:
+    get:
+      tags: [Chats]
+      summary: Get chat details
+      operationId: getChat
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      responses:
+        '200':
+          description: Chat details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [Chats]
+      summary: Update group chat metadata (owner or admin only)
+      operationId: updateGroupChat
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: All fields optional; omit to leave unchanged
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                description:
+                  type: string
+                  maxLength: 500
+                avatar_url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Updated chat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/members:
+    get:
+      tags: [Chats]
+      summary: List chat members
+      operationId: getChatMembers
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      responses:
+        '200':
+          description: Member list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [Chats]
+      summary: Add a member to a group chat (owner or admin only)
+      operationId: addChatMember
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  $ref: '#/components/schemas/UUID'
+              required: [user_id]
+      responses:
+        '204':
+          description: Member added
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/members/me:
+    delete:
+      tags: [Chats]
+      summary: Leave a group chat
+      description: |
+        If the caller is the owner, ownership is transferred to the next admin
+        (or any member if no admin exists). If the caller is the last member
+        the group is deleted entirely. Cannot leave a direct chat.
+      operationId: leaveChat
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      responses:
+        '204':
+          description: Left the chat
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/members/{user_id}:
+    delete:
+      tags: [Chats]
+      summary: Remove a member from a group chat (owner or admin only)
+      operationId: removeChatMember
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204':
+          description: Member removed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/members/{user_id}/role:
+    patch:
+      tags: [Chats]
+      summary: Change a member's role (owner only; cannot self-demote)
+      operationId: changeMemberRole
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum: [admin, member]
+                  example: admin
+              required: [role]
+      responses:
+        '204':
+          description: Role updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Messages
+  # ---------------------------------------------------------------------------
+  /api/v1/chats/{chat_id}/messages:
+    post:
+      tags: [Messages]
+      summary: Send a message to a chat
+      operationId: sendMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                  example: "Hello everyone!"
+                type:
+                  type: string
+                  enum: [text, image, file]
+                  default: text
+                reply_to_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: Omit this field entirely if not replying to a message. Do NOT send an empty string or zero UUID.
+                  example: null
+              required: [content]
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Messages]
+      summary: Get paginated message history (newest first)
+      description: |
+        Uses keyset (cursor-based) pagination. To fetch older pages pass both
+        `cursor_id` and `cursor_ts` from the `next_cursor` of the previous
+        response.
+      operationId: getMessageHistory
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - name: limit
+          in: query
+          description: Number of messages to return (clamped to [1, 100])
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+        - name: cursor_id
+          in: query
+          description: ID field from the previous page's `next_cursor`
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: cursor_ts
+          in: query
+          description: "`created_at` field from the previous page's `next_cursor` (RFC3339Nano)"
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Page of messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PageResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/read:
+    post:
+      tags: [Messages]
+      summary: Mark all messages in a chat as read
+      operationId: markRead
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+      responses:
+        '204':
+          description: Read receipt recorded
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/messages/{msg_id}:
+    put:
+      tags: [Messages]
+      summary: Edit a message (author only)
+      operationId: editMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/MsgID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+              required: [content]
+      responses:
+        '200':
+          description: Updated message
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Messages]
+      summary: Delete a message (soft-delete, author only)
+      operationId: deleteMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/MsgID'
+      responses:
+        '204':
+          description: Message deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/chats/{chat_id}/messages/{msg_id}/reactions:
+    post:
+      tags: [Messages]
+      summary: Add an emoji reaction to a message
+      operationId: addReaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/MsgID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                emoji:
+                  type: string
+                  minLength: 1
+                  maxLength: 10
+                  example: "👍"
+              required: [emoji]
+      responses:
+        '204':
+          description: Reaction added
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Messages]
+      summary: Remove an emoji reaction from a message
+      operationId: removeReaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChatID'
+        - $ref: '#/components/parameters/MsgID'
+        - name: emoji
+          in: query
+          required: true
+          description: The emoji to remove (e.g. 👍)
+          schema:
+            type: string
+            example: "👍"
+      responses:
+        '204':
+          description: Reaction removed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # System
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '503':
+          description: Service is unhealthy (database unreachable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: unhealthy
+                  error:
+                    type: string
+                    example: "storage: connection refused"
+
+  /ws:
+    get:
+      tags: [System]
+      summary: Open a WebSocket connection for real-time events
+      description: |
+        Upgrades an HTTP connection to WebSocket. Authentication is via the
+        `Authorization: Bearer <access_token>` header — same as all other
+        protected endpoints.
+
+        After the handshake the connection is **bidirectional**:
+        - **Server → client**: JSON events for all chats the user is a member of.
+        - **Client → server**: JSON events to broadcast to a chat room.
+
+        **Server-push event shape**:
+        ```json
+        {
+          "type": "message.created" | "message.edited" | "message.deleted" | "chat.read" | "user.online" | "user.offline",
+          "payload": { ... }
+        }
+        ```
+
+        **Client-send event shape** (must include `chat_id`):
+        ```json
+        {
+          "type": "message.created",
+          "chat_id": "<uuid of the target chat>",
+          "payload": { ... }
+        }
+        ```
+        The server validates that the sender is a member of `chat_id` before
+        broadcasting. Events for chats the client is not subscribed to are dropped.
+      operationId: websocket
+      security:
+        - BearerAuth: []
+      responses:
+        '101':
+          description: Switching Protocols — WebSocket connection established
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'

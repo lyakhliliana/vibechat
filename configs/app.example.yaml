@@ -1,0 +1,65 @@
+storage:
+  type: postgres
+  postgres:
+    host: localhost
+    port: 5432
+    user: vibechat
+    password: <your-db-password>
+    dbname: vibechat
+    ssl_mode: disable
+    max_conns: 10
+    min_conns: 2
+
+jwt:
+  access_secret: "<32+ random chars>"
+  refresh_secret: "<32+ different random chars>"
+  access_token_ttl: 15m
+  refresh_token_ttl: 168h
+
+delivery:
+  enabled:
+    - http
+    - ws
+  http:
+    host: "0.0.0.0"
+    port: 8080
+    read_timeout: 5s
+    write_timeout: 10s
+    idle_timeout: 60s
+    allowed_origins: []
+    rate_limit:
+      max_requests: 20   # max auth requests per IP per window
+      window: 60s
+    max_body_bytes: 4194304  # 4 MB
+    # tls:                       # uncomment for HTTPS/WSS
+    #   cert_file: certs/cert.pem
+    #   key_file:  certs/key.pem
+  ws:
+    max_message_size: 4096  # bytes per incoming WebSocket frame
+
+logger:
+  type: console        # stdout | console | file
+  level: info          # trace | debug | info | warn | error
+  # Uncomment the section below when using type: file
+  # file:
+  #   path: logs/vibechat.log
+  #   max_size: 256    # MB per file
+  #   max_backups: 3
+
+hasher:
+  cost: 10             # bcrypt cost factor (10–12 recommended)
+
+cache:
+  type: redis           # mock (in-process, dev) | redis (production)
+  redis:                # required when type is "redis"
+    addr: "localhost:6379"
+    password: "<your-redis-password>"
+    db: 0
+  ttl:
+    user: 5m    # how long user profiles stay cached
+    chat: 10m   # how long chat metadata stays cached
+    member: 2m  # how long membership/role entries stay cached (security-sensitive)
+
+profile:               # pprof HTTP server (loopback only, never expose publicly)
+  enabled: true
+  addr: "localhost:8082"

@@ -1,0 +1,58 @@
+storage:
+  type: postgres
+  postgres:
+    host: postgres
+    port: 5432
+    user: vibechat
+    password: vibechat
+    dbname: vibechat
+    ssl_mode: disable
+
+jwt:
+  access_secret: "vibechat-access-secret-key-do-not-use-in-prod"
+  refresh_secret: "vibechat-refresh-secret-key-do-not-use-in-prod"
+  access_token_ttl: 30m
+  refresh_token_ttl: 168h
+
+delivery:
+  enabled:
+    - http
+    - ws
+  http:
+    host: "0.0.0.0"
+    port: 8080
+    read_timeout: 5s
+    write_timeout: 10s
+    idle_timeout: 60s
+    allowed_origins: []
+    rate_limit:
+      max_requests: 20
+      window: 60s
+    max_body_bytes: 4194304
+  ws:
+    max_message_size: 4096
+
+logger:
+  type: file
+  level: info
+  file:
+    path: /app/logs/vibechat.log
+    max_size: 256
+    max_backups: 3
+
+hasher:
+  cost: 10
+
+cache:
+  type: redis
+  redis:
+    addr: "redis:6379"
+    password: "vibechat"
+  ttl:
+    user: 5m
+    chat: 10m
+    member: 2m
+
+profile:
+  enabled: true
+  addr: "0.0.0.0:8082"

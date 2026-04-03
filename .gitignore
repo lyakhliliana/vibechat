@@ -1,0 +1,14 @@
+bin/
+coverage.out
+*.pid
+
+# local config overrides (legacy root-level config, now lives in configs/)
+configs/*.local.yaml
+
+# TLS certificates
+certs/
+*.pem
+*.key
+*.crt
+
+postgres_data

@@ -1,0 +1,31 @@
+# ---- PostgreSQL (default) ------------------------------------------------
+storage:
+  type: postgres
+  postgres:
+    host: localhost
+    port: 5432
+    user: vibechat
+    password: <your-db-password>
+    dbname: vibechat
+    ssl_mode: disable
+    migrations_path: migrations/postgres  # PostgreSQL migrations live in migrations/postgres/
+
+# ---- MySQL (alternative) -------------------------------------------------
+# storage:
+#   type: mysql
+#   mysql:
+#     host: localhost
+#     port: 3306
+#     user: vibechat
+#     password: <your-db-password>
+#     dbname: vibechat
+#     migrations_path: migrations/mysql  # MySQL migrations live in migrations/mysql/
+
+logger:
+  type: console        # stdout | console | file
+  level: info
+  # Uncomment the section below when using type: file
+  # file:
+  #   path: logs/migrate.log
+  #   max_size: 64
+  #   max_backups: 2

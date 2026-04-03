@@ -1,0 +1,18 @@
+storage:
+  type: postgres
+  postgres:
+    host: postgres
+    port: 5432
+    user: vibechat
+    password: vibechat
+    dbname: vibechat
+    ssl_mode: disable
+    migrations_path: /app/services/migrate/migrations/postgres
+
+logger:
+  type: file
+  level: info
+  file:
+    path: /app/logs/migrate.log
+    max_size: 64
+    max_backups: 2
