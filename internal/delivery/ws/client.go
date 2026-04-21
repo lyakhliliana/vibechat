@@ -1,8 +1,8 @@
 package ws
 
 import (
-	"slices"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"

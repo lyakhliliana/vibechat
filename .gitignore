@@ -1,6 +1,7 @@
 bin/
 coverage.out
 *.pid
+vendor
 
 # local config overrides (legacy root-level config, now lives in configs/)
 configs/*.local.yaml

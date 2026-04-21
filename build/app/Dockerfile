@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/app  ./cmd/app
+RUN CGO_ENABLED=0 go build -mod=vendor -ldflags="-s -w" -o /out/app  ./cmd/app
 
 
 FROM alpine:3.20
